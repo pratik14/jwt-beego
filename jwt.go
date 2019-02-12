@@ -2,11 +2,12 @@ package jwtbeego
 
 import (
 	"crypto/rsa"
+	"encoding/json"
 	"errors"
 	"io/ioutil"
 	"log"
 
-	"github.com/dgrijalva/jwt-go"
+	jwt "github.com/dgrijalva/jwt-go"
 )
 
 // EasyToken is an Struct to encapsulate username and expires as parameter
@@ -20,8 +21,9 @@ type EasyToken struct {
 // https://gist.github.com/cryptix/45c33ecf0ae54828e63b
 // location of the files used for signing and verification
 const (
-	privKeyPath = "keys/rsakey.pem"     // openssl genrsa -out app.rsa keysize
-	pubKeyPath  = "keys/rsakey.pem.pub" // openssl rsa -in app.rsa -pubout > app.rsa.pub
+	azureKeyPath = "keys/azure_key.json"
+	privKeyPath  = "keys/rsakey.pem"     // openssl genrsa -out app.rsa keysize
+	pubKeyPath   = "keys/rsakey.pem.pub" // openssl rsa -in app.rsa -pubout > app.rsa.pub
 )
 
 var (
@@ -29,7 +31,39 @@ var (
 	mySigningKey *rsa.PrivateKey
 )
 
+type AzureKeys struct {
+	Keys []struct {
+		Kty string   `json:"kty"`
+		Use string   `json:"use"`
+		Kid string   `json:"kid"`
+		X5T string   `json:"x5t"`
+		N   string   `json:"n"`
+		E   string   `json:"e"`
+		X5C []string `json:"x5c"`
+	} `json:"keys"`
+}
+
+var kidRsaKeyMap = make(map[string]*rsa.PublicKey)
+
 func init() {
+	var data []byte
+	data, _ = ioutil.ReadFile(azureKeyPath)
+
+	jwk := AzureKeys{}
+	json.Unmarshal(data, &jwk)
+
+	for _, v := range jwk.Keys {
+		header := "-----BEGIN CERTIFICATE-----\n"
+		footer := "\n-----END CERTIFICATE-----"
+		key := header + v.X5C[0] + footer
+		xx := []uint8(key)
+		verifyKeyxx, errxx := jwt.ParseRSAPublicKeyFromPEM(xx)
+		if errxx != nil {
+			log.Fatal(errxx)
+		}
+		kidRsaKeyMap[v.Kid] = verifyKeyxx
+	}
+
 	verifyBytes, err := ioutil.ReadFile(pubKeyPath)
 	if err != nil {
 		log.Fatal(err)
@@ -79,6 +113,14 @@ func (e EasyToken) ValidateToken(tokenString string) (bool, string, error) {
 	}
 
 	token, err := jwt.Parse(tokenString, func(token *jwt.Token) (interface{}, error) {
+		if token.Header["kid"] != nil {
+			kid := token.Header["kid"].(string)
+			key := kidRsaKeyMap[kid]
+			if key == nil {
+				return nil, errors.New("No key found")
+			}
+			return key, nil
+		}
 		return verifyKey, nil
 	})
 
